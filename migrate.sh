@@ -12,7 +12,7 @@ Migrate WordPress sites using ssh/rsync/wp-cli - Created by j@lmt.ca
         	--debug		Print debug messages
 		-sd		Set source directory, defaults to public_html
 		-dd		Set destination directory, defaults to public_html
-		-tu		Temporary domain, not used if not defined.
+		-tu		Temporary URL, not used if not defined.
 "
         exit
 }
@@ -95,7 +95,7 @@ rm $src_db_bkup
 # Copy files. Should only show one line progress updated.
 rsync -r --progress $src_user@$src_ip:$src_dir/wp-content $dst_dir --exclude cache --exclude "infinitewp/backups" --exclude "uploads/backwpup*"
 
-# Temporary Domain Migration Domain
+# Temporary URL
 if [ -z "$temp_url" ]; then
 	wp --path=$dst_dir plugin install multiple-domain --activate
 	wp --path=$dst_dir --format=json option set multiple-domain-domains '{"'$domain'":{"base":null,"lang":null,"protocol":"auto"},"'$temp_url'":{"base":null,"lang":null,"protocol":"auto"}}'
