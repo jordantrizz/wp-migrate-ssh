@@ -99,6 +99,8 @@ rsync -r --progress $src_user@$src_ip:$src_dir/wp-content $dst_dir --exclude cac
 if [ -z "$temp_url" ]; then
 	wp --path=$dst_dir plugin install multiple-domain --activate
 	wp --path=$dst_dir --format=json option set multiple-domain-domains '{"'$domain'":{"base":null,"lang":null,"protocol":"auto"},"'$temp_url'":{"base":null,"lang":null,"protocol":"auto"}}'
+        wp --path=$dst_dir search-replace $domain $temp_url
+        wp --path=$dst_dir cache flush
 fi
 
 # Install default plugins after migrate
