@@ -13,6 +13,7 @@ Migrate WordPress sites using ssh/rsync/wp-cli - Created by jordantrizz (https:/
 		fo		file-only - only copy over files.
 		do		database-only - only copy over the database.
 		pmo		post-migration-only - only run any post migration steps.
+		tu		temporary-url - setup a temporary url.
 	
 	Required Options:
 		-sh		Source IP/Hostname.
@@ -25,6 +26,7 @@ Migrate WordPress sites using ssh/rsync/wp-cli - Created by jordantrizz (https:/
 		-dd		Set destination directory, defaults to public_html
 		-tu		Temporary URL, not used if not defined.
 		-pc		Post migration custom wp-cli commands.
+		-gp		Enable GridPane NGiNX helper and configure to flush redis page cache.
 "
         exit
 }
@@ -45,8 +47,6 @@ ssh_init () {
 	# Check if there's a public SSH key.
 	if [ -f "$HOME/.ssh/id_rsa.pub" ]; then
 		_debug "Found ssh key."
-		ssh $src_user@$src_ip "/usr/local/sbin/wp --path=$src_dir db export ~/$src_db_bkup"
-		scp $src_user@$src_ip:~/$src_user-wp-sql.sql .
 	else
 		_debug "Can't find ssh key, using password."
 		# Let's get the SSH password. Read password interactively and save it to the environment
@@ -60,7 +60,7 @@ ssh_init () {
 }
 
 generate_ssh_key () {
-	_debug "Initializing ssh-keygen"
+	_debug "Running ssh-keygen function"
 	echo "Generated SSH key, please enter when asked for a password"
 	ssh-keygen
 }	
@@ -73,20 +73,40 @@ migrate_files () {
  }
 
 migrate_database () {
+	_debug "Running migrate_database function"
         # Variables
         src_db_bkup=$src_user-wp-sql.sql
 
         # Import the database.
+	_debug "Resetting database"
         wp --path=$dst_dir db reset
+	_debug "Importing database."
         wp --path=$dst_dir db import $src_db_bkup
         # Disabled cause this can go wrong.
 	#rm $src_db_bkup
 }
 
-post_temp_url () {
+post_migration () {
+	_debug "Running post_migration function"
+	# Flush Cache
+	wp --path=$dst_dir cache flush
+
+        if [ -z "$temp_url" ]; then
+	# GridPane Stuff
+		wp --path=$dst_dir plugin activate nginx-helper
+		wp --path=$dst_dir --format=json option set rt_wp_nginx_helper_options '{"enable_purge":"1","cache_method":"enable_redis","purge_method":"get_request","enable_map":null,"enable_log":null,"log_level":"INFO","log_filesize":"5","enable_stamp":null,"purge_homepage_on_edit":"1","purge_homepage_on_del":"1","purge_archive_on_edit":"1","purge_archive_on_del":"1","purge_archive_on_new_comment":null,"purge_archive_on_deleted_comment":null,"purge_page_on_mod":"1","purge_page_on_new_comment":"1","purge_page_on_deleted_comment":"1","redis_hostname":"127.0.0.1","redis_port":"6379","redis_prefix":"nginx-cache:","purge_url":"","redis_enabled_by_constant":0}'
+	fi	
+}
+
+temporary_url () {
+	_debug "Running temporary_url function."
+	# Setup temporary url.
         wp --path=$dst_dir plugin install multiple-domain --activate
         wp --path=$dst_dir --format=json option set multiple-domain-domains '{"'$domain'":{"base":null,"lang":null,"protocol":"auto"},"'$temp_url'":{"base":null,"lang":null,"protocol":"auto"}}'
 	wp --path=$dst_dir --skip-themes --skip-plugins search-replace $domain $temp_url
+	wp --path=$dst_dir cache flush
+	wp --path=$dst_dir option get multiple-domain-domains
+	curl --head $temp_url
 }
 
 _debug "Debug is enabled"
@@ -141,6 +161,11 @@ case $key in
     shift # past argument
     shift # past value
     ;;
+    -gp)
+    gridpane="$2"
+    shift # past argument
+    shift # past value
+    ;;
     *)    # unknown option
     POSITIONAL+=("$1") # save it in an array for later
     shift # past argument
@@ -159,10 +184,12 @@ if [[ $mode = 'm' ]]; then
 	if [ -z "$domain" ]; then echo "Missing required option -d"; exit; fi
 	if [ -z "$src_dir" ]; then src_dir="public_html"; fi
 	if [ -z "$dst_dir" ]; then src_dir="public_html"; fi
+	echo "Mirgate method"
 
 	ssh_init
 	migrate_database
-	migrate_files		
+	migrate_files
+	post_migration
 		
 	# Temporary URL
 	if [ -z "$temp_url" ]; then
@@ -182,7 +209,7 @@ if [[ $mode = 'm' ]]; then
 elif [[ $mode = 's' ]]; then
         if [ -z "$src_ip" ]; then echo "Missing required option -sh"; exit; fi
         if [ -z "$src_user" ]; then echo "Missing required option -su"; exit ; fi
-        echo "Setting up host."
+        echo "Setting up host method."
         if [[ -f "$HOME/.ssh/id_rsa.pub" ]]; then
 	        echo "Copying SSH key."
 	        ssh-copy-id $src_user@$src_ip
@@ -197,18 +224,22 @@ elif [[ $mode = 'fo' ]]; then
         if [ -z "$src_user" ]; then echo "Missing required option -su"; exit ; fi
         if [ -z "$src_dir" ]; then src_dir="public_html"; fi
         if [ -z "$dst_dir" ]; then src_dir="public_html"; fi
-        echo 'Files only'
+        echo 'Files only method.'
 	ssh_init
        	migrate_files
 elif [[ $mode = 'do' ]]; then
         if [ -z "$src_ip" ]; then echo "Missing required option -sh"; exit; fi
         if [ -z "$src_user" ]; then echo "Missing required option -su"; exit ; fi
-	echo 'Database only'
-	echo 'Not implemented yet'
-	# database-only-cmd
+	echo 'Database only method.'
+	migrate_database
 elif [[ $mode = 'pmo' ]]; then
-        if [ -z $dst_dir ]; then eho "You need to provide a destination directory using -dd"; exit; fi
-        post-migration
+        if [ -z $dst_dir ]; then echo "You need to provide a destination directory using -dd"; exit; fi
+        post_migration
+elif [[ $mode = 'tu' ]]; then
+        if [ -z $temp_url ]; then echo "You need to provide a temporary url using -tu"; exit; fi
+	if [ -z $dst_dir ]; then echo "You need to provide a destination directory using -dd"; exit; fi
+	if [ -z $domain ]; then echo "You need to provide a destination directory using -d"; exit; fi
+	temporary_url
 else
 	help
 fi
