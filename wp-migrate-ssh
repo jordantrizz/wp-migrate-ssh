@@ -3,12 +3,15 @@
 # -- Functions
 
 help () {
-	echo "Usage: migrate.sh -m [migrate|post-cmd] [OPTIONS]...
-Migrate WordPress sites using ssh/rsync/wp-cli - Created by j@lmt.ca
+	echo "Usage: wp-migrate-ssh.sh -m [m|fo|do] -sh <source hostname> -su <source user> -d <domain name> [OPTIONS]...
 
-	Modes:
-		-m		migrate - run migration
-		-p		post-cmd - run post migration commands, useful if you simply want to run post commands again.
+Migrate WordPress sites using ssh/rsync/wp-cli - Created by jordantrizz (https://github.com/jordantrizz/wp-migrate-ssh
+
+	Choose a mode -m:	
+		m		migrate - run migration
+		fo		file-only - only copy over files.
+		do		database-only - only copy over the database.
+		pmo		post-migration-only - only run any post migration steps.
 	
 	Required Options:
 		-sh		Source IP/Hostname.
@@ -20,15 +23,46 @@ Migrate WordPress sites using ssh/rsync/wp-cli - Created by j@lmt.ca
 		-sd		Set source directory, defaults to public_html
 		-dd		Set destination directory, defaults to public_html
 		-tu		Temporary URL, not used if not defined.
-
-	Option post commands:
-		-p		Install plugins after migration
+		-pc		Post migration custom wp-cli commands.
 "
         exit
 }
 
 cleanup () {
 	wp --path=$dst_dir --skip-themes --skip-plugins cache flush
+}
+
+ssh_init () {
+                # Let's get the SSH password
+                # Read password interactively and save it to the environment
+                read -s -p "Password to use: " SSHPASS
+                export SSHPASS
+
+                # Grab the database. Need to fix path issues.
+                sshpass -p "$SSHPASS" ssh $src_user@$src_ip "/usr/local/sbin/wp --path=$src_dir db export ~/$src_db_bkup"
+                sshpass -p "$SSHPASS" scp $src_user@$src_ip:~/$src_user-wp-sql.sql .
+}
+
+migrate_files () {
+	# Copy files. Should only show one line progress updated.
+        sshpass -p "$SSHPASS" rsync -r --progress $src_user@$src_ip:$src_dir/wp-content $dst_dir --exclude "wp-content/cache" --exclude "infinitewp/backups" --exclude "uploads/backwpup*"
+}
+
+migrate_database () {
+        # Variables
+        src_db_bkup=$src_user-wp-sql.sql
+
+        # Import the database.
+        wp --path=$dst_dir db reset
+        wp --path=$dst_dir db import $src_db_bkup
+        # Disabled cause this can go wrong.
+	#rm $src_db_bkup
+}
+
+post_temp_url () {
+        wp --path=$dst_dir plugin install multiple-domain --activate
+        wp --path=$dst_dir --format=json option set multiple-domain-domains '{"'$domain'":{"base":null,"lang":null,"protocol":"auto"},"'$temp_url'":{"base":null,"lang":null,"protocol":"auto"}}'
+	wp --path=$dst_dir --skip-themes --skip-plugins search-replace $domain $temp_url
 }
 
 # -- Parse Command Line Arguments https://stackoverflow.com/questions/192249/how-do-i-parse-command-line-arguments-in-bash
@@ -76,16 +110,11 @@ case $key in
     shift # past argument
     shift # past value
     ;;
-    -y)
-    plugins="$2"
+    -pc)
+    post-commands="$2"
     shift # past argument
     shift # past value
     ;;
-#    -extra)
-#    DKIM="$2"
-#    shift # past argument
-#    shift # past value
-#    ;;
     *)    # unknown option
     POSITIONAL+=("$1") # save it in an array for later
     shift # past argument
@@ -98,54 +127,46 @@ if [[ -n $1 ]]; then
     unknown_options=$1
 fi
 
-if [[ $mode = 'migrate' ]]; then
+if [[ $mode = 'm' ]]; then
+	if [ -z "$src_ip" ]; then echo "Missing required option -sh"; exit; fi
+	if [ -z "$src_user" ]; then echo "Missing required option -su"; exit ; fi
+	if [ -z "$domain" ]; then echo "Missing required option -d"; exit; fi
+	if [ -z "$src_dir" ]; then src_dir="public_html"; fi
+	if [ -z "$dst_dir" ]; then src_dir="public_html"; fi
 
-	if [ -z "$src_ip" ] || [ -z "$src_user" ] || [ -z "$domain" ]; then 
-		help
-	else
-
-		if [ -z "$src_dir" ]; then src_dir="public_html"; fi
-		if [ -z "$dst_dir" ]; then src_dir="public_html"; fi
-
-		# Variables
-		src_db_bkup=$src_user-wp-sql.sql
-
-		# Let's get the SSH password
-		# Read password interactively and save it to the environment
-		read -s -p "Password to use: " SSHPASS 
-		export SSHPASS
-
-		# Grab the database. Need to fix path issues.
-		sshpass -p "$SSHPASS" ssh $src_user@$src_ip "/usr/local/sbin/wp --path=$src_dir db export ~/$src_db_bkup"
-		sshpass -p "$SSHPASS" scp $src_user@$src_ip:~/$src_user-wp-sql.sql .
-
-		# Import the database.
-		wp --path=$dst_dir db reset
-		wp --path=$dst_dir db import $src_db_bkup
-		rm $src_db_bkup
-
-		# Copy files. Should only show one line progress updated.
-		sshpass -p "$SSHPASS" rsync -r --progress $src_user@$src_ip:$src_dir/wp-content $dst_dir --exclude "wp-content/cache" --exclude "infinitewp/backups" --exclude "uploads/backwpup*"
-
-		# Temporary URL
-		if [ -z "$temp_url" ]; then
-			wp --path=$dst_dir plugin install multiple-domain --activate
-			wp --path=$dst_dir --format=json option set multiple-domain-domains '{"'$domain'":{"base":null,"lang":null,"protocol":"auto"},"'$temp_url'":{"base":null,"lang":null,"protocol":"auto"}}'
-		        wp --path=$dst_dir --skip-themes --skip-plugins search-replace $domain $temp_url
-		fi
-
-		# Install plugins
-		if [ -z "$plugins" ]; then
-        		wp --path=$dst_dir plugin install --activate $plugins
-		fi
+	ssh_init
+	migrate_database
+	migrate_files		
+		
+	# Temporary URL
+	if [ -z "$temp_url" ]; then
+		post_temp_url
 	fi
-elif [[ $mode = 'post-cmd' ]]; then 
-	if [ -z $dst_dir ]; then
-		echo "You need to provide a destination directory using -dd"
-		exit
-	else
-		cleanup
+	
+	# Specify wp-cli commands after migration is completed
+	if [ -z "$pc"]; then
+		echo "Not implemented yet"
 	fi
+	
+	# Install plugins - Future Use
+	#if [ -z "$plugins" ]; then
+        #	wp --path=$dst_dir plugin install --activate $plugins
+	#fi
+elif [[ $mode = 'fo' ]]; then
+        if [ -z "$src_ip" ]; then echo "Missing required option -sh"; exit; fi
+        if [ -z "$src_user" ]; then echo "Missing required option -su"; exit ; fi
+        echo 'Files only'
+	ssh_init
+       	migrate_files
+elif [[ $mode = 'do' ]]; then
+        if [ -z "$src_ip" ]; then echo "Missing required option -sh"; exit; fi
+        if [ -z "$src_user" ]; then echo "Missing required option -su"; exit ; fi
+	echo 'Database only'
+	echo 'Not implemented yet'
+	# database-only-cmd
+elif [[ $mode = 'pmo' ]]; then
+        if [ -z $dst_dir ]; then eho "You need to provide a destination directory using -dd"; exit; fi
+        post-migration
 else
 	help
 fi
