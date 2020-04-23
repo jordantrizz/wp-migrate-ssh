@@ -9,6 +9,7 @@ Migrate WordPress sites using ssh/rsync/wp-cli - Created by jordantrizz (https:/
 
 	Choose a mode -m:	
 		m		migrate - run migration
+		s		setup - setup remote host with SSH key for multiple runs.
 		fo		file-only - only copy over files.
 		do		database-only - only copy over the database.
 		pmo		post-migration-only - only run any post migration steps.
@@ -32,21 +33,44 @@ cleanup () {
 	wp --path=$dst_dir --skip-themes --skip-plugins cache flush
 }
 
+_debug () {
+	if [[ $debug = 1 ]]; then
+		echo "*** Debug: $@"
+	fi
+}
+
 ssh_init () {
-                # Let's get the SSH password
-                # Read password interactively and save it to the environment
+	_debug "Initializing SSH"
+	
+	# Check if there's a public SSH key.
+	if [ -f "$HOME/.ssh/id_rsa.pub" ]; then
+		_debug "Found ssh key."
+		ssh $src_user@$src_ip "/usr/local/sbin/wp --path=$src_dir db export ~/$src_db_bkup"
+		scp $src_user@$src_ip:~/$src_user-wp-sql.sql .
+	else
+		_debug "Can't find ssh key, using password."
+		# Let's get the SSH password. Read password interactively and save it to the environment
                 read -s -p "Password to use: " SSHPASS
                 export SSHPASS
 
                 # Grab the database. Need to fix path issues.
                 sshpass -p "$SSHPASS" ssh $src_user@$src_ip "/usr/local/sbin/wp --path=$src_dir db export ~/$src_db_bkup"
                 sshpass -p "$SSHPASS" scp $src_user@$src_ip:~/$src_user-wp-sql.sql .
+	fi
 }
 
+generate_ssh_key () {
+	_debug "Initializing ssh-keygen"
+	echo "Generated SSH key, please enter when asked for a password"
+	ssh-keygen
+}	
+
 migrate_files () {
+	_debug "Starting migrate_files function"
+	_debug "Migrating remote $src_dir to local $dst_dir"
 	# Copy files. Should only show one line progress updated.
-        sshpass -p "$SSHPASS" rsync -r --progress $src_user@$src_ip:$src_dir/wp-content $dst_dir --exclude "wp-content/cache" --exclude "infinitewp/backups" --exclude "uploads/backwpup*"
-}
+        sshpass -p "$SSHPASS" rsync -iavzh --progress $src_user@$src_ip:$src_dir/wp-content $dst_dir --exclude "wp-content/cache" --exclude "infinitewp/backups" --exclude "uploads/backwpup*" --log-file=$src_ip-wp-migrate-ssh.log 
+ }
 
 migrate_database () {
         # Variables
@@ -64,6 +88,8 @@ post_temp_url () {
         wp --path=$dst_dir --format=json option set multiple-domain-domains '{"'$domain'":{"base":null,"lang":null,"protocol":"auto"},"'$temp_url'":{"base":null,"lang":null,"protocol":"auto"}}'
 	wp --path=$dst_dir --skip-themes --skip-plugins search-replace $domain $temp_url
 }
+
+_debug "Debug is enabled"
 
 # -- Parse Command Line Arguments https://stackoverflow.com/questions/192249/how-do-i-parse-command-line-arguments-in-bash
 POSITIONAL=()
@@ -152,9 +178,25 @@ if [[ $mode = 'm' ]]; then
 	#if [ -z "$plugins" ]; then
         #	wp --path=$dst_dir plugin install --activate $plugins
 	#fi
+
+elif [[ $mode = 's' ]]; then
+        if [ -z "$src_ip" ]; then echo "Missing required option -sh"; exit; fi
+        if [ -z "$src_user" ]; then echo "Missing required option -su"; exit ; fi
+        echo "Setting up host."
+        if [[ -f "$HOME/.ssh/id_rsa.pub" ]]; then
+	        echo "Copying SSH key."
+	        ssh-copy-id $src_user@$src_ip
+	else
+		echo "No SSH key found, generating one."
+		generate_ssh_key
+                echo "Copying SSH key."
+                ssh-copy-id $src_user@$src_ip
+	fi	        
 elif [[ $mode = 'fo' ]]; then
         if [ -z "$src_ip" ]; then echo "Missing required option -sh"; exit; fi
         if [ -z "$src_user" ]; then echo "Missing required option -su"; exit ; fi
+        if [ -z "$src_dir" ]; then src_dir="public_html"; fi
+        if [ -z "$dst_dir" ]; then src_dir="public_html"; fi
         echo 'Files only'
 	ssh_init
        	migrate_files
