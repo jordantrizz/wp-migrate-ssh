@@ -125,7 +125,7 @@ if [[ $mode = 'migrate' ]]; then
 		rm $src_db_bkup
 
 		# Copy files. Should only show one line progress updated.
-		sshpass -p "$SSHPASS" rsync -r --progress $src_user@$src_ip:$src_dir/wp-content $dst_dir --exclude cache --exclude "infinitewp/backups" --exclude "uploads/backwpup*"
+		sshpass -p "$SSHPASS" rsync -r --progress $src_user@$src_ip:$src_dir/wp-content $dst_dir --exclude "wp-content/cache" --exclude "infinitewp/backups" --exclude "uploads/backwpup*"
 
 		# Temporary URL
 		if [ -z "$temp_url" ]; then
