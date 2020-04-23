@@ -1,0 +1,159 @@
+#!/bin/bash
+
+# -- Functions
+
+help () {
+	echo "Usage: migrate.sh -m [migrate|post-cmd] [OPTIONS]...
+Migrate WordPress sites using ssh/rsync/wp-cli - Created by j@lmt.ca
+
+	Modes:
+		-m		migrate - run migration
+		-p		post-cmd - run post migration commands, useful if you simply want to run post commands again.
+	
+	Required Options:
+		-sh		Source IP/Hostname.
+		-su		Source User
+		-d		Domain Name of site to be migrated
+
+	Optional:
+        	--debug		Print debug messages
+		-sd		Set source directory, defaults to public_html
+		-dd		Set destination directory, defaults to public_html
+		-tu		Temporary URL, not used if not defined.
+
+	Option post commands:
+		-p		Install plugins after migration
+"
+        exit
+}
+
+cleanup () {
+	wp --path=$dst_dir --skip-themes --skip-plugins cache flush
+}
+
+# -- Parse Command Line Arguments https://stackoverflow.com/questions/192249/how-do-i-parse-command-line-arguments-in-bash
+POSITIONAL=()
+while [[ $# -gt 0 ]]
+do
+key="$1"
+
+case $key in
+    --debug)
+    debug="1"
+    shift # past argument
+    ;;
+    -m)
+    mode="$2"
+    shift # past argument
+    ;;
+    -sh)
+    src_ip="$2"
+    shift # past argument
+    shift # past value
+    ;;
+    -su)
+    src_user="$2"
+    shift # past argument
+    shift # past value
+    ;;
+    -sd)
+    src_dir="$2"
+    shift # past argument
+    shift # past value
+    ;;
+    -d)
+    domain="$2"
+    shift # past argument
+    shift # past value
+    ;;
+    -tu)
+    temp_url="$2"
+    shift # past argument
+    shift # past value
+    ;;
+    -dd)
+    dst_dir="$2"
+    shift # past argument
+    shift # past value
+    ;;
+    -y)
+    plugins="$2"
+    shift # past argument
+    shift # past value
+    ;;
+#    -extra)
+#    DKIM="$2"
+#    shift # past argument
+#    shift # past value
+#    ;;
+    *)    # unknown option
+    POSITIONAL+=("$1") # save it in an array for later
+    shift # past argument
+    ;;
+esac
+done
+set -- "${POSITIONAL[@]}" # restore positional parameters
+
+if [[ -n $1 ]]; then
+    unknown_options=$1
+fi
+
+if [[ $mode = 'migrate' ]]; then
+
+	if [ -z "$src_ip" ] || [ -z "$src_user" ] || [ -z "$domain" ]; then 
+		help
+	else
+
+		if [ -z "$src_dir" ]; then src_dir="public_html"; fi
+		if [ -z "$dst_dir" ]; then src_dir="public_html"; fi
+
+		# Variables
+		src_db_bkup=$src_user-wp-sql.sql
+
+		# Let's get the SSH password
+		# Read password interactively and save it to the environment
+		read -s -p "Password to use: " SSHPASS 
+		export SSHPASS
+
+		# Grab the database. Need to fix path issues.
+		sshpass -p "$SSHPASS" ssh $src_user@$src_ip "/usr/local/sbin/wp --path=$src_dir db export ~/$src_db_bkup"
+		sshpass -p "$SSHPASS" scp $src_user@$src_ip:~/$src_user-wp-sql.sql .
+
+		# Import the database.
+		wp --path=$dst_dir db reset
+		wp --path=$dst_dir db import $src_db_bkup
+		rm $src_db_bkup
+
+		# Copy files. Should only show one line progress updated.
+		sshpass -p "$SSHPASS" rsync -r --progress $src_user@$src_ip:$src_dir/wp-content $dst_dir --exclude cache --exclude "infinitewp/backups" --exclude "uploads/backwpup*"
+
+		# Temporary URL
+		if [ -z "$temp_url" ]; then
+			wp --path=$dst_dir plugin install multiple-domain --activate
+			wp --path=$dst_dir --format=json option set multiple-domain-domains '{"'$domain'":{"base":null,"lang":null,"protocol":"auto"},"'$temp_url'":{"base":null,"lang":null,"protocol":"auto"}}'
+		        wp --path=$dst_dir --skip-themes --skip-plugins search-replace $domain $temp_url
+		fi
+
+		# Install plugins
+		if [ -z "$plugins" ]; then
+        		wp --path=$dst_dir plugin install --activate $plugins
+		fi
+	fi
+elif [[ $mode = 'post-cmd' ]]; then 
+	if [ -z $dst_dir ]; then
+		echo "You need to provide a destination directory using -dd"
+		exit
+	else
+		cleanup
+	fi
+else
+	help
+fi
+
+# Divi will fail to load if you don't update this.
+# Also need to investigate recently_edited option
+#if [ -z "$divifix" ]; then
+#	wp --path=$dst_dir option delete _transient_et_core_path 
+#fi
+# clear the exported variable containing the password
+unset SSHPASS
