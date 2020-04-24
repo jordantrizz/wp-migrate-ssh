@@ -22,6 +22,7 @@ Migrate WordPress sites using ssh/rsync/wp-cli - Created by jordantrizz (https:/
 
 	Optional:
         	--debug		Print debug messages
+        	-f		Force even though WP installation doesn't exists, ususally due to no database.
 		-sd		Set source directory, defaults to public_html
 		-dd		Set destination directory, defaults to public_html
 		-tu		Temporary URL, not used if not defined.
@@ -42,41 +43,94 @@ _debug () {
 }
 
 ssh_init () {
-	_debug "Initializing SSH"
-	
+	echo "Initializing SSH"	
 	# Check if there's a public SSH key.
 	if [ -f "$HOME/.ssh/id_rsa.pub" ]; then
-		_debug "Found ssh key."
-	else
-		_debug "Can't find ssh key, using password."
-		# Let's get the SSH password. Read password interactively and save it to the environment
-                read -s -p "Password to use: " SSHPASS
-                export SSHPASS
+		echo "Found ssh key."
+		
+		# Check if the if we have know hosts.
+		echo "Checking remote connection to $src_ip."
+		sshcheck=$(ssh-keygen -F $remote_IP 2>&1)	
+		if [ $? -eq 0 ]; then
+			echo "Remote host is already in the Known Hosts file."
+		else
+			echo "Adding remote system $src_up to $HOME/.ssh/known_hosts"
+			ssh-keyscan $src_ip >> $HOME/.ssh/known_hosts
+			echo "Remote host $src_ip added to the known hosts file."
+		fi
 
-                # Grab the database. Need to fix path issues.
-                sshpass -p "$SSHPASS" ssh $src_user@$src_ip "/usr/local/sbin/wp --path=$src_dir db export ~/$src_db_bkup"
-                sshpass -p "$SSHPASS" scp $src_user@$src_ip:~/$src_user-wp-sql.sql .
-	fi
+		# See if we can connect to remote host.
+		ssh_connect_test
+		if [ "$sshstatus" == "ok" ]; then
+			echo "Remote SSH Test Successful."
+		else
+			echo "SSH Test Un-successful, sending ssh key."
+			ssh-copy-id -i ~/.ssh/id_rsa.pub $src_user@$src_ip
+			if [ $? -eq 0 ]; then
+				echo "Failed to send key, falling back to password."
+				ssh_password
+			else
+				echo "Sent ssh key successfully, testing connection."
+				ssh_connect_test
+				if [ "$sshstatus" == "ok" ]; then
+		                        echo "Remote SSH Test Successful."
+		                else
+	                                echo "Failed to send key, falling back to password."
+        	                        ssh_password			
+        	                fi
+        	        fi
+		fi
+	else
+		ssh_password
+	fi	
+}
+
+ssh_connect_test () {
+	sshstatus=$(ssh -o BatchMode=yes -o ConnectTimeout=5 $src_user@$src_ip echo ok 2>&1)
+}
+
+ssh_password () {
+        echo "Using SSH password function."
+        # Let's get the SSH password. Read password interactively and save it to the environment
+        read -s -p "Password to use: " SSHPASS
+        export SSHPASS
 }
 
 generate_ssh_key () {
-	_debug "Running ssh-keygen function"
+	echo "Running ssh-keygen function"
 	echo "Generated SSH key, please enter when asked for a password"
 	ssh-keygen
 }	
 
 migrate_files () {
-	_debug "Starting migrate_files function"
-	_debug "Migrating remote $src_dir to local $dst_dir"
+	echo "Starting migrate_files function"
+	echo "Migrating remote $src_dir to local $dst_dir"
+	
 	# Copy files. Should only show one line progress updated.
-        sshpass -p "$SSHPASS" rsync -iavzh --progress $src_user@$src_ip:$src_dir/wp-content $dst_dir --exclude "wp-content/cache" --exclude "infinitewp/backups" --exclude "uploads/backwpup*" --log-file=$src_ip-wp-migrate-ssh.log 
+        if [ -z $SSHPASS]; then
+		 _debug  "No \$SSHPASS so doing not passing to ssh or scp"
+		rsync -iavzh --progress --log-file=$src_ip-wp-migrate-ssh.log $src_user@$src_ip:$src_dir/wp-content $dst_dir --exclude "wp-content/cache" --exclude "infinitewp/backups" --exclude "uploads/backwpup*"
+	else
+		 _debug  "\$SSHPASS exists so passing to ssh or scp"
+	        sshpass -p "$SSHPASS" rsync -iavzh --progress --log-file=$src_ip-wp-migrate-ssh.log $src_user@$src_ip:$src_dir/wp-content $dst_dir --exclude "wp-content/cache" --exclude "infinitewp/backups" --exclude "uploads/backwpup*"
+	fi	     
  }
 
 migrate_database () {
-	_debug "Running migrate_database function"
+	echo "Running migrate_database function"
         # Variables
         src_db_bkup=$src_user-wp-sql.sql
 
+        # Grab the database. Need to fix path issues.
+	if [ -z $SSHPASS]; then
+		_debug	"No \$SSHPASS so doing not passing to ssh or scp"
+                ssh $src_user@$src_ip "/usr/local/sbin/wp --path=$src_dir db export ~/$src_db_bkup"
+                scp $src_user@$src_ip:~/$src_user-wp-sql.sql .
+	else 
+		_debug  "\$SSHPASS exists so passing to ssh or scp"
+        	sshpass -p "$SSHPASS" ssh $src_user@$src_ip "/usr/local/sbin/wp --path=$src_dir db export ~/$src_db_bkup"
+	        sshpass -p "$SSHPASS" scp $src_user@$src_ip:~/$src_user-wp-sql.sql .
+	fi
         # Import the database.
 	_debug "Resetting database"
         wp --path=$dst_dir db reset
@@ -136,13 +190,18 @@ case $key in
     shift # past argument
     shift # past value
     ;;
-    -sd)
-    src_dir="$2"
+    -d)
+    domain="$2"
     shift # past argument
     shift # past value
     ;;
-    -d)
-    domain="$2"
+    -f)
+    force="1"
+    shift # past argument
+    shift # past value
+    ;;
+    -sd)
+    src_dir="$2"
     shift # past argument
     shift # past value
     ;;
@@ -183,14 +242,22 @@ if [[ $mode = 'm' ]]; then
 	if [ -z "$src_user" ]; then echo "Missing required option -su"; exit ; fi
 	if [ -z "$domain" ]; then echo "Missing required option -d"; exit; fi
 	if [ -z "$src_dir" ]; then src_dir="public_html"; fi
-	if [ -z "$dst_dir" ]; then src_dir="public_html"; fi
+	if [ -z "$dst_dir" ]; then dst_dir="public_html"; fi
 	echo "Mirgate method"
-
-	ssh_init
-	migrate_database
-	migrate_files
-	post_migration
-		
+	
+	# Checking if a WordPress install exists.
+	_debug "Checking if a WordPress install exists in $dst_dir"
+	if [[ $force = '1' ]]; then
+                ssh_init
+                migrate_database
+                migrate_files
+                post_migration
+	else
+		if ! $(wp --path=$dst_dir core is-installed); then
+			echo "No WordPress install in $dst_dir"
+			exit
+		fi
+	fi
 	# Temporary URL
 	if [ -z "$temp_url" ]; then
 		post_temp_url
