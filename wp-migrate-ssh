@@ -32,6 +32,18 @@ Migrate WordPress sites using ssh/rsync/wp-cli - Created by jordantrizz (https:/
         exit
 }
 
+preflight () {
+	echo "Checking for commands"
+	cmds_required=( wp sshpass ssh )
+	for cmd in "${cmds_required[@]}"
+	do
+		if ! type "$cmd" > /dev/null 2>&1; then
+			echo "You don't have $cmd..exiting".
+			exit
+		fi
+	done
+}
+
 cleanup () {
 	wp --path=$dst_dir --skip-themes --skip-plugins cache flush
 }
@@ -45,6 +57,7 @@ _debug () {
 ssh_init () {
 	echo "Initializing SSH"	
 	# Check if there's a public SSH key.
+	echo "Checking if we have a public key"
 	if [ -f "$HOME/.ssh/id_rsa.pub" ]; then
 		echo "Found ssh key."
 		
@@ -81,6 +94,7 @@ ssh_init () {
         	        fi
 		fi
 	else
+		echo "No public key found."
 		ssh_password
 	fi	
 }
@@ -94,6 +108,7 @@ ssh_password () {
         # Let's get the SSH password. Read password interactively and save it to the environment
         read -s -p "Password to use: " SSHPASS
         export SSHPASS
+        echo ""
 }
 
 generate_ssh_key () {
@@ -107,7 +122,7 @@ migrate_files () {
 	echo "Migrating remote $src_dir to local $dst_dir"
 	
 	# Copy files. Should only show one line progress updated.
-        if [ -z $SSHPASS]; then
+        if [ -z $SSHPASS ]; then
 		 _debug  "No \$SSHPASS so doing not passing to ssh or scp"
 		rsync -iavzh --progress --log-file=$src_ip-wp-migrate-ssh.log $src_user@$src_ip:$src_dir/wp-content $dst_dir --exclude "wp-content/cache" --exclude "infinitewp/backups" --exclude "uploads/backwpup*"
 	else
@@ -122,14 +137,17 @@ migrate_database () {
         src_db_bkup=$src_user-wp-sql.sql
 
         # Grab the database. Need to fix path issues.
-	if [ -z $SSHPASS]; then
-		_debug	"No \$SSHPASS so doing not passing to ssh or scp"
-                ssh $src_user@$src_ip "/usr/local/sbin/wp --path=$src_dir db export ~/$src_db_bkup"
-                scp $src_user@$src_ip:~/$src_user-wp-sql.sql .
+	if [ -z $SSHPASS ]; then
+		_debug	"No \$SSHPASS so not passing to ssh or scp"
+                ssh -o "StrictHostKeyChecking no" $src_user@$src_ip "/usr/local/sbin/wp --path=$src_dir db export ~/$src_db_bkup"
+                scp -o "StrictHostKeyChecking no" $src_user@$src_ip:~/$src_user-wp-sql.sql .
 	else 
 		_debug  "\$SSHPASS exists so passing to ssh or scp"
-        	sshpass -p "$SSHPASS" ssh $src_user@$src_ip "/usr/local/sbin/wp --path=$src_dir db export ~/$src_db_bkup"
-	        sshpass -p "$SSHPASS" scp $src_user@$src_ip:~/$src_user-wp-sql.sql .
+		echo "Dumping database on $src_user@$src_ip"
+        	dump_db=$(sshpass -p "$SSHPASS" ssh -o "StrictHostKeyChecking no" $src_user@$src_ip "/usr/local/sbin/wp --path=$src_dir db export ~/$src_db_bkup")
+        	if [ $? -eq 0 ]; then echo "dumpb_db successful"; else echo "dump_db failed $dump_db"; exit; fi
+	        grab_db=$(sshpass -p "$SSHPASS" scp -o "StrictHostKeyChecking no" $src_user@$src_ip:~/$src_user-wp-sql.sql .)
+	        _debug "$grab_db"
 	fi
         # Import the database.
 	_debug "Resetting database"
@@ -144,12 +162,8 @@ post_migration () {
 	_debug "Running post_migration function"
 	# Flush Cache
 	wp --path=$dst_dir cache flush
-
-        if [ -z "$temp_url" ]; then
-	# GridPane Stuff
-		wp --path=$dst_dir plugin activate nginx-helper
-		wp --path=$dst_dir --format=json option set rt_wp_nginx_helper_options '{"enable_purge":"1","cache_method":"enable_redis","purge_method":"get_request","enable_map":null,"enable_log":null,"log_level":"INFO","log_filesize":"5","enable_stamp":null,"purge_homepage_on_edit":"1","purge_homepage_on_del":"1","purge_archive_on_edit":"1","purge_archive_on_del":"1","purge_archive_on_new_comment":null,"purge_archive_on_deleted_comment":null,"purge_page_on_mod":"1","purge_page_on_new_comment":"1","purge_page_on_deleted_comment":"1","redis_hostname":"127.0.0.1","redis_port":"6379","redis_prefix":"nginx-cache:","purge_url":"","redis_enabled_by_constant":0}'
-	fi	
+	wp --path=$dst_dir plugin activate nginx-helper
+	wp --path=$dst_dir --format=json option set rt_wp_nginx_helper_options '{"enable_purge":"1","cache_method":"enable_redis","purge_method":"get_request","enable_map":null,"enable_log":null,"log_level":"INFO","log_filesize":"5","enable_stamp":null,"purge_homepage_on_edit":"1","purge_homepage_on_del":"1","purge_archive_on_edit":"1","purge_archive_on_del":"1","purge_archive_on_new_comment":null,"purge_archive_on_deleted_comment":null,"purge_page_on_mod":"1","purge_page_on_new_comment":"1","purge_page_on_deleted_comment":"1","redis_hostname":"127.0.0.1","redis_port":"6379","redis_prefix":"nginx-cache:","purge_url":"","redis_enabled_by_constant":0}'
 }
 
 temporary_url () {
@@ -198,7 +212,6 @@ case $key in
     -f)
     force="1"
     shift # past argument
-    shift # past value
     ;;
     -sd)
     src_dir="$2"
@@ -237,6 +250,9 @@ if [[ -n $1 ]]; then
     unknown_options=$1
 fi
 
+preflight
+_debug "Debug mode enabled"
+
 if [[ $mode = 'm' ]]; then
 	if [ -z "$src_ip" ]; then echo "Missing required option -sh"; exit; fi
 	if [ -z "$src_user" ]; then echo "Missing required option -su"; exit ; fi
@@ -246,25 +262,29 @@ if [[ $mode = 'm' ]]; then
 	echo "Mirgate method"
 	
 	# Checking if a WordPress install exists.
-	_debug "Checking if a WordPress install exists in $dst_dir"
-	if [[ $force = '1' ]]; then
-                ssh_init
-                migrate_database
-                migrate_files
-                post_migration
-	else
+	echo "Checking if a WordPress install exists in $dst_dir"
+
+	if [[ !$force = '1' ]]; then
 		if ! $(wp --path=$dst_dir core is-installed); then
 			echo "No WordPress install in $dst_dir"
-			exit
-		fi
-	fi
+        		exit
+        	fi
+        fi
+	# Start migration process.
+	echo "Start migration proces"
+        ssh_init
+        migrate_database
+        migrate_files
+        post_migration
+
 	# Temporary URL
-	if [ -z "$temp_url" ]; then
+	if [ ! -z "$temp_url" ]; then
+		echo "Setting up temporary URL"
 		post_temp_url
 	fi
 	
 	# Specify wp-cli commands after migration is completed
-	if [ -z "$pc"]; then
+	if [ ! -z "$pc"]; then
 		echo "Not implemented yet"
 	fi
 	
