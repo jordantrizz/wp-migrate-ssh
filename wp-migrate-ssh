@@ -120,14 +120,17 @@ generate_ssh_key () {
 migrate_files () {
 	echo "Starting migrate_files function"
 	echo "Migrating remote $src_dir to local $dst_dir"
-	
+
+	# Exclude these directories,
+	rsync_exclude='--exclude "wp-content/cache"'	
+
 	# Copy files. Should only show one line progress updated.
         if [ -z $SSHPASS ]; then
 		 _debug  "No \$SSHPASS so doing not passing to ssh or scp"
-		rsync -iavzh --progress --log-file=$src_ip-wp-migrate-ssh.log $src_user@$src_ip:$src_dir/wp-content $dst_dir --exclude "wp-content/cache" --exclude "infinitewp/backups" --exclude "uploads/backwpup*"
+		rsync -iavzh --progress --log-file=$src_ip-wp-migrate-ssh.log $src_user@$src_ip:$src_dir/wp-content $dst_dir $rsync_exclude
 	else
 		 _debug  "\$SSHPASS exists so passing to ssh or scp"
-	        sshpass -p "$SSHPASS" rsync -iavzh --progress --log-file=$src_ip-wp-migrate-ssh.log $src_user@$src_ip:$src_dir/wp-content $dst_dir --exclude "wp-content/cache" --exclude "infinitewp/backups" --exclude "uploads/backwpup*"
+	        sshpass -p "$SSHPASS" rsync -iavzh --progress --log-file=$src_ip-wp-migrate-ssh.log $src_user@$src_ip:$src_dir/wp-content $dst_dir $rsync_exclude
 	fi	     
  }
 
