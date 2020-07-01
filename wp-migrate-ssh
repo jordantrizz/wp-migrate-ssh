@@ -142,7 +142,7 @@ migrate_database () {
         # Grab the database. Need to fix path issues.
 	if [ -z $SSHPASS ]; then
 		_debug	"No \$SSHPASS so not passing to ssh or scp"
-                ssh -o "StrictHostKeyChecking no" $src_user@$src_ip "/usr/local/sbin/wp --path=$src_dir db export ~/$src_db_bkup"
+                ssh -o "StrictHostKeyChecking no" $src_user@$src_ip "wp --path=$src_dir db export ~/$src_db_bkup"
                 scp -o "StrictHostKeyChecking no" $src_user@$src_ip:~/$src_user-wp-sql.sql .
 	else 
 		_debug  "\$SSHPASS exists so passing to ssh or scp"
