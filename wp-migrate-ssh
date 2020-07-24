@@ -34,6 +34,7 @@ Migrate WordPress sites using ssh/rsync/wp-cli - Created by jordantrizz (https:/
 }
 
 preflight () {
+	# Check if we have the required commands to run this script
 	echo "Checking for commands"
 	cmds_required=( wp sshpass ssh )
 	for cmd in "${cmds_required[@]}"
@@ -44,9 +45,15 @@ preflight () {
 		fi
 	done
 
+	# Set some defaults before the big loop if they're not set on the command line
+	if [ -z "$src_port" ]; then src_port="22"; fi
+	if [ -z "$src_dir" ]; then src_dir="public_html"; fi
+	if [ -z "$dst_dir" ]; then dst_dir="public_html"; fi
+
+	# Check if $dst_dir exists
 	echo "Checking if destination directory $dst_dir exists"
 	if [ ! -d $dst_dir ];then
-		echo "$src_dir doesn't exist"
+		echo "$dst_dir doesn't exist"
 		exit
 	fi
 }
@@ -94,7 +101,7 @@ ssh_init () {
 }
 
 ssh_key_connect_test () {
-	sshstatus=$(ssh -o BatchMode=yes -o ConnectTimeout=5 $src_user@$src_ip -p $ssh_port echo ok 2>&1)
+	sshstatus=$(ssh -o BatchMode=yes -o ConnectTimeout=5 $src_user@$src_ip -p $src_port echo ok 2>&1)
 }
 
 ssh_password_connect () {
@@ -108,7 +115,7 @@ ssh_password_connect () {
 ssh_deploy_key () {
 	# Deploy SSH public key
 	echo "Deploying SSH public_key"
-	ssh-copy-id -i ~/.ssh/id_rsa.pub $src_user@$src_ip -p $ssh_port
+	ssh-copy-id -i ~/.ssh/id_rsa.pub $src_user@$src_ip -p $src_port
         if [ $? -eq 0 ]; then
 		echo "Failed to send key, falling back to password."
                 ssh_password_connect
@@ -135,11 +142,11 @@ migrate_files () {
 	echo "Migrating remote $src_dir to local $dst_dir"
 
 	# Exclude these directories,
-	rsync_exclude='--exclude "wp-content/cache"'	
+	rsync_exclude='--exclude "wp-content/cache" --exclude "wp-content/ai1wm-backups"'
 
 	# Copy files. Should only show one line progress updated.
         if [ -z $SSHPASS ]; then
-		 _debug  "No \$SSHPASS so doing not passing to ssh or scp"
+		 _debug "No \$SSHPASS so doing not passing to ssh or scp"
 		rsync -iavzh --progress --log-file=$src_ip-wp-migrate-ssh.log -e "ssh -p $src_port" $src_user@$src_ip:$src_dir/wp-content $dst_dir $rsync_exclude
 	else
 		 _debug  "\$SSHPASS exists so passing to ssh or scp"
@@ -155,6 +162,7 @@ migrate_database () {
         # Grab the database. Need to fix path issues.
 	if [ -z $SSHPASS ]; then
 		_debug	"No \$SSHPASS so not passing to ssh or scp"
+		echo "Dumping database on $src_user@$src_ip"
                 ssh -o "StrictHostKeyChecking no" $src_user@$src_ip -p $src_port "wp --path=$src_dir db export ~/$src_db_bkup"
                 scp -o "StrictHostKeyChecking no" -P $src_port $src_user@$src_ip:~/$src_user-wp-sql.sql .
 	else 
@@ -192,6 +200,12 @@ temporary_url () {
 	wp --path=$dst_dir cache flush
 	wp --path=$dst_dir option get multiple-domain-domains
 	curl --head $temp_url
+}
+
+check_required () {
+	# Check if required options were set
+	if [ -z "$src_ip" ]; then echo "Missing required option -sh"; exit; fi
+	if [ -z "$src_user" ]; then echo "Missing required option -su"; exit ; fi
 }
 
 _debug "Debug is enabled"
@@ -275,13 +289,17 @@ fi
 preflight
 _debug "Debug mode enabled"
 
+# Set some defaults before the big loop if they're not set on the command line
+if [ -z "$src_port" ]; then src_port="22"; fi
+if [ -z "$src_dir" ]; then src_dir="public_html"; fi
+if [ -z "$dst_dir" ]; then dst_dir="public_html"; fi
+
+# Begin the loop
 if [[ $mode = 'm' ]]; then
-	if [ -z "$src_ip" ]; then echo "Missing required option -sh"; exit; fi
-	if [ -z "$src_user" ]; then echo "Missing required option -su"; exit ; fi
+	check_required
 	if [ -z "$domain" ]; then echo "Missing required option -d"; exit; fi
 	if [ -z "$src_dir" ]; then src_dir="public_html"; fi
 	if [ -z "$dst_dir" ]; then dst_dir="public_html"; fi
-	if [ -z "$src_port" ]; then src_port="22"; fi
 
 	echo "Mirgate method selected."
 	
@@ -321,8 +339,7 @@ if [[ $mode = 'm' ]]; then
 	#fi
 
 elif [[ $mode = 's' ]]; then
-        if [ -z "$src_ip" ]; then echo "Missing required option -sh"; exit; fi
-        if [ -z "$src_user" ]; then echo "Missing required option -su"; exit ; fi
+	check_required
         echo "Setting up host method."
         if [[ -f "$HOME/.ssh/id_rsa.pub" ]]; then
 	        echo "Copying SSH key."
@@ -334,16 +351,12 @@ elif [[ $mode = 's' ]]; then
                 ssh-copy-id $src_user@$src_ip
 	fi	        
 elif [[ $mode = 'fo' ]]; then
-        if [ -z "$src_ip" ]; then echo "Missing required option -sh"; exit; fi
-        if [ -z "$src_user" ]; then echo "Missing required option -su"; exit ; fi
-        if [ -z "$src_dir" ]; then src_dir="public_html"; fi
-        if [ -z "$dst_dir" ]; then src_dir="public_html"; fi
+	check_required
         echo 'Files only method.'
 	ssh_init
        	migrate_files
 elif [[ $mode = 'do' ]]; then
-        if [ -z "$src_ip" ]; then echo "Missing required option -sh"; exit; fi
-        if [ -z "$src_user" ]; then echo "Missing required option -su"; exit ; fi
+	check_required
 	echo 'Database only method.'
 	migrate_database
 elif [[ $mode = 'pmo' ]]; then
