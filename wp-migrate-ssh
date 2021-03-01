@@ -36,7 +36,7 @@ Migrate WordPress sites using ssh/rsync/wp-cli - Created by jordantrizz (https:/
 preflight () {
 	# Check if we have the required commands to run this script
 	echo "Checking for commands"
-	cmds_required=( wp sshpass ssh )
+	cmds_required=( wp ssh )
 	for cmd in "${cmds_required[@]}"
 	do
 		if ! type "$cmd" > /dev/null 2>&1; then
@@ -44,6 +44,9 @@ preflight () {
 			exit
 		fi
 	done
+	if ! type "sshpass" > /dev/null 2>&1; then
+		echo "WARNING: *** Can't find sshpass can only proceed with key based logins ***"
+	fi
 
 	# Set some defaults before the big loop if they're not set on the command line
 	if [ -z "$src_port" ]; then src_port="22"; fi
